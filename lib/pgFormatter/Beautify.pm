@@ -429,6 +429,9 @@ sub beautify {
     $self->{ '_is_in_declare' } = 0;
     $self->{ '_is_in_block' } = -1;
     $self->{ '_is_in_function' } = 0;
+
+    $self->{ '_is_in_format_function' } = 0;
+
     $self->{ '_is_in_index' } = 0;
     $self->{ '_is_in_with' }  = 0;
     $self->{ '_parenthesis_level' } = 0;
@@ -480,8 +483,8 @@ sub beautify {
         }
         elsif (!$self->{ '_is_in_grant' } and $token =~ /^UPDATE$/i and ($self->_next_token && $self->_next_token ne ';' && $self->_next_token ne ')')) {
                 $self->{ '_current_sql_stmt' } = 'UPDATE';
-	} elsif ($token =~ /^(string_agg|group_concat)$/i) {
-		$self->{ '_has_order_by' } = 1;
+	    } elsif ($token =~ /^(string_agg|group_concat)$/i) {
+		      $self->{ '_has_order_by' } = 1;
         }
 
         elsif ($token =~ /^(AS|IS)$/i) {
@@ -502,7 +505,9 @@ sub beautify {
         }
 
         # Desactivate the block mode when code delimiter is found for the second time
-        elsif ($self->{ '_fct_code_delimiter' } && $token eq $self->{ '_fct_code_delimiter' }) {
+        elsif ($self->{ '_fct_code_delimiter' } && $token eq $self->{ '_fct_code_delimiter' } 
+            #&& $self->{ '_is_in_format_function' } == 0
+            ) {
             $self->{ '_is_in_block' } = -1;
             @{ $self->{ '_level_stack' } } = ();
             $self->{ '_level' } = 0;
@@ -550,6 +555,11 @@ sub beautify {
                 if ($last && grep(/^\Q$last\E$/i, @{$self->{ 'dict' }->{ 'pg_functions' }})) {
                     $self->{ '_is_in_function' }++;
                 }
+
+                if ($last && grep(/^\Q$last\E$/i, @{$self->{ 'dict' }->{ 'pg_format_functions' }})) {
+                    $self->{ '_is_in_format_function' } = 1;                 
+                }
+
                 $self->_over;
                 if ($self->{ '_is_in_type' } == 1) {
                     $last = $token;
@@ -561,7 +571,7 @@ sub beautify {
 
         elsif ( $token eq ')' ) {
             $self->{ '_parenthesis_level' }--;
-	    $self->{ '_has_order_by' } = 0;
+	        $self->{ '_has_order_by' } = 0;
             if ($self->{ '_is_in_index' }) {
                 $self->_add_token( '' );
                 $self->_add_token( $token );
@@ -588,7 +598,7 @@ sub beautify {
                 @{ $self->{ '_level_stack' } } = ();
                 $self->{ '_level' } = 0;
                 $self->{ 'break' } = ' ' unless ( $self->{ 'spaces' } != 0 );
-		$self->{ '_is_in_with' } = 0;
+		        $self->{ '_is_in_with' } = 0;
             }
             # Do not go further if this is the last token
             if (not defined $self->_next_token) {
@@ -640,12 +650,13 @@ sub beautify {
             $self->{ '_is_in_create' } = 0;
             $self->{ '_is_in_type' } = 0;
             $self->{ '_is_in_function' } = 0;
+            
             $self->{ '_is_in_index' } = 0;
             $self->{ '_is_in_if' } = 0;
             $self->{ '_current_sql_stmt' } = '';
             $self->{ '_is_in_with' } = 0;
             $self->{ '_is_in_grant' } = 0;
-	    $self->{ '_has_order_by' } = 0;
+	        $self->{ '_has_order_by' } = 0;
             $self->_add_token($token);
             $self->{ 'break' } = "\n" unless ( $self->{ 'spaces' } != 0 );
             $self->_new_line;
@@ -656,8 +667,10 @@ sub beautify {
             }
             # End of statement; remove all indentation when we are not in a BEGIN/END block
             if (!$self->{ '_is_in_declare' } && $self->{ '_is_in_block' } == -1) {
-                @{ $self->{ '_level_stack' } } = ();
-                $self->{ '_level' } = 0;
+                if ($self->{ '_is_in_format_function' } == 0) {
+                    @{ $self->{ '_level_stack' } } = ();
+                    $self->{ '_level' } = 0;    
+                }                
                 $self->{ 'break' } = ' ' unless ( $self->{ 'spaces' } != 0 );
             } else {
                 if ($#{ $self->{ '_level_stack' } } == -1) {
@@ -666,6 +679,7 @@ sub beautify {
                         $self->{ '_level' } = $self->{ '_level_stack' }[-1];
                 }
             }
+            $self->{ '_is_in_format_function' } = 0;
         }
 
         elsif ( uc($token) eq 'BEGIN' ) {
@@ -864,7 +878,7 @@ sub beautify {
             # We are in code block
             } else {
                 # decrease the block level if this is a END closing a BEGIN block
-                if ($self->_next_token !~ /^(IF|LOOP|CASE|INTO|FROM|END|ELSE|AND|OR|WHEN|AS|,)$/i) {
+                if ($self->_next_token !~ /^(IF|LOOP|CASE|INTO|FROM|END|ELSE|AND|OR|WHEN|AS|,)$/i && $self->{ '_is_in_format_function' } == 0) {
                     $self->{ '_is_in_block' }--;
                 }
                 # Go back to level stored with IF/LOOP/BEGIN/EXCEPTION block
@@ -1460,6 +1474,7 @@ sub set_defaults {
     $self->{ 'placeholder' }  = '';
     $self->{ 'keywords' }     = $self->{ 'dict' }->{ 'pg_keywords' };
     $self->{ 'functions' }    = $self->{ 'dict' }->{ 'pg_functions' };
+    $self->{ 'format_functions' }    = $self->{ 'dict' }->{ 'pg_format_functions' };
     $self->{ 'separator' }    = '';
     $self->{ 'comma' }        = 'end';
 
@@ -1537,6 +1552,10 @@ sub set_dicts {
         next if grep { $k eq $_ } @sql_keywords;
         push @sql_keywords, $k;
     }
+
+    my @pg_format_functions = map { lc } qw(
+        format
+    );
 
     my @pg_functions = map { lc } qw(
         ascii age bit_length btrim cast char_length character_length coalesce convert chr current_date current_time current_timestamp
@@ -1859,6 +1878,7 @@ sub set_dicts {
     $self->{ 'dict' }->{ 'pg_keywords' }   = \@pg_keywords;
     $self->{ 'dict' }->{ 'sql_keywords' }  = \@sql_keywords;
     $self->{ 'dict' }->{ 'pg_functions' }  = \@pg_functions;
+    $self->{ 'dict' }->{ 'pg_format_functions' }  = \@pg_format_functions;
     $self->{ 'dict' }->{ 'copy_keywords' } = \@copy_keywords;
     $self->{ 'dict' }->{ 'symbols' }       = \%symbols;
     $self->{ 'dict' }->{ 'brackets' }      = \@brackets;
